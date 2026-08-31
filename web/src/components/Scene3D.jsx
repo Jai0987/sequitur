@@ -2,9 +2,10 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-const BUY = "#1fa37d";
-const SELL = "#e0522e";
+const BUY = new THREE.Color("#1fa37d");
+const SELL = new THREE.Color("#e0522e");
 const GROUND = "#12161f";
+const MAX_LIVE_POINTS = 20000; // pre-allocated buffer capacity; a run this long would be unusual
 
 function norm(v, lo, hi) {
   if (hi === lo) return 0;
@@ -26,93 +27,38 @@ function buildIdlePoints() {
   return pts;
 }
 
-function buildFillPoints(rows) {
-  const t0 = rows[0].timestamp_ns;
-  const times = rows.map((r) => (r.timestamp_ns - t0) / 1e9);
-  const prices = rows.map((r) => r.true_price_at_trade);
-  const invs = rows.map((r) => r.inventory_after);
-  const tMax = Math.max(...times) || 1;
-  const pMin = Math.min(...prices), pMax = Math.max(...prices);
-  const iMin = Math.min(...invs), iMax = Math.max(...invs);
-
-  return rows.map(
-    (r, i) =>
-      new THREE.Vector3(
-        norm(times[i], 0, tMax) * 3,
-        norm(prices[i], pMin, pMax) * 1.6,
-        norm(invs[i], iMin, iMax) * 1.6,
-      ),
-  );
+// A single pre-allocated buffer, appended to in place. Positions already
+// written are never touched again -- that's what makes adding the Nth
+// point O(1) instead of O(N), which matters when fills arrive several
+// times a second.
+function makeGrowableGeometry(capacity) {
+  const positions = new Float32Array(capacity * 3);
+  const colors = new Float32Array(capacity * 3);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geometry.setDrawRange(0, 0);
+  return { geometry, positions, colors };
 }
 
-function buildContentGroup(rows) {
-  const group = new THREE.Group();
-  const hasData = rows && rows.length > 0;
-
-  if (hasData) {
-    const points = buildFillPoints(rows);
-    const positions = new Float32Array(points.length * 3);
-    const colors = new Float32Array(points.length * 3);
-    const buyColor = new THREE.Color(BUY);
-    const sellColor = new THREE.Color(SELL);
-
-    points.forEach((p, i) => {
-      positions[i * 3] = p.x;
-      positions[i * 3 + 1] = p.y;
-      positions[i * 3 + 2] = p.z;
-      const c = rows[i].side === "BUY" ? buyColor : sellColor;
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
-    });
-
-    const lineGeo = new THREE.BufferGeometry();
-    lineGeo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    lineGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    const lineMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 });
-    group.add(new THREE.Line(lineGeo, lineMat));
-
-    const sphereGeo = new THREE.SphereGeometry(0.028, 12, 12);
-    points.forEach((p, i) => {
-      const isBuy = rows[i].side === "BUY";
-      const mat = new THREE.MeshStandardMaterial({
-        color: isBuy ? BUY : SELL,
-        emissive: isBuy ? BUY : SELL,
-        emissiveIntensity: 0.4,
-      });
-      const mesh = new THREE.Mesh(sphereGeo, mat);
-      mesh.position.copy(p);
-      group.add(mesh);
-    });
-  } else {
-    const points = buildIdlePoints();
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
-    const lineMat = new THREE.LineBasicMaterial({ color: 0x3a4256, transparent: true, opacity: 0.6 });
-    group.add(new THREE.Line(lineGeo, lineMat));
-  }
-
-  return group;
+function writePoint(buf, index, x, y, z, color) {
+  buf.positions[index * 3] = x;
+  buf.positions[index * 3 + 1] = y;
+  buf.positions[index * 3 + 2] = z;
+  buf.colors[index * 3] = color.r;
+  buf.colors[index * 3 + 1] = color.g;
+  buf.colors[index * 3 + 2] = color.b;
 }
 
-function disposeGroup(group) {
-  group.traverse((obj) => {
-    if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) {
-      if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-      else obj.material.dispose();
-    }
-  });
-}
-
-export default function Scene3D({ rows }) {
+export default function Scene3D({ rows, liveBounds }) {
   const mountRef = useRef(null);
   const sceneRef = useRef(null);
-  const contentGroupRef = useRef(null);
-  const stateRef = useRef({ userInteracted: false });
+  const idleRef = useRef(null);
+  const liveGroupRef = useRef(null);
+  const stateRef = useRef({ userInteracted: false, datasetKey: null, count: 0 });
 
-  // Scene, camera, renderer, controls, lights: set up once and never torn
-  // down on data changes -- rebuilding all of this on every single fill
-  // during a live run would reset the camera/orbit position constantly.
+  // Scene, camera, renderer, controls, lights: set up once, never torn
+  // down on data changes.
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -140,6 +86,36 @@ export default function Scene3D({ rows }) {
     grid.position.y = -1.7;
     scene.add(grid);
 
+    // Idle ribbon: tiny and static, fine to build once up front.
+    const idleLine = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(buildIdlePoints()),
+      new THREE.LineBasicMaterial({ color: 0x3a4256, transparent: true, opacity: 0.6 }),
+    );
+    scene.add(idleLine);
+    idleRef.current = idleLine;
+
+    // Live/result data: one Line (the path) and one Points object (the
+    // fill markers) sharing pre-allocated, incrementally-filled buffers --
+    // a single draw call each, regardless of point count.
+    const lineBuf = makeGrowableGeometry(MAX_LIVE_POINTS);
+    const line = new THREE.Line(lineBuf.geometry, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85 }));
+    const pointsBuf = makeGrowableGeometry(MAX_LIVE_POINTS);
+    const points = new THREE.Points(
+      pointsBuf.geometry,
+      new THREE.PointsMaterial({ size: 0.07, vertexColors: true, sizeAttenuation: true, transparent: true, opacity: 0.95 }),
+    );
+    // The buffer grows in place after its bounding volume is first
+    // computed, which would otherwise leave later points incorrectly
+    // frustum-culled -- points are always written within the fixed
+    // normalized cube this scene uses, so culling buys nothing anyway.
+    line.frustumCulled = false;
+    points.frustumCulled = false;
+    const liveGroup = new THREE.Group();
+    liveGroup.add(line, points);
+    liveGroup.visible = false;
+    scene.add(liveGroup);
+    liveGroupRef.current = { group: liveGroup, lineBuf, pointsBuf };
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enablePan = false;
     controls.minDistance = 2.5;
@@ -163,9 +139,8 @@ export default function Scene3D({ rows }) {
     let frameId;
     function animate() {
       frameId = requestAnimationFrame(animate);
-      const group = contentGroupRef.current;
-      if (group && group.userData.idle && !stateRef.current.userInteracted) {
-        group.rotation.y += 0.0025;
+      if (idleLine.visible && !stateRef.current.userInteracted) {
+        idleLine.rotation.y += 0.0025;
       }
       controls.update();
       renderer.render(scene, camera);
@@ -193,31 +168,78 @@ export default function Scene3D({ rows }) {
     };
   }, []);
 
-  // Content only: swap the line/points group in place when the data
-  // changes, leaving the camera and orbit state exactly where the viewer
-  // left it.
+  // Data updates: append-only during a live run, one full (but cheap,
+  // since it's O(final size) and happens once) rebuild at the moment the
+  // authoritative result replaces the live stream.
   useEffect(() => {
     const ctx = sceneRef.current;
-    if (!ctx) return;
+    const live = liveGroupRef.current;
+    if (!ctx || !live) return;
 
-    const newGroup = buildContentGroup(rows);
-    newGroup.userData.idle = !(rows && rows.length > 0);
-
-    if (contentGroupRef.current) {
-      ctx.scene.remove(contentGroupRef.current);
-      disposeGroup(contentGroupRef.current);
+    const hasData = rows && rows.length > 0;
+    idleRef.current.visible = !hasData;
+    live.group.visible = hasData;
+    if (!hasData) {
+      stateRef.current.datasetKey = null;
+      stateRef.current.count = 0;
+      live.lineBuf.geometry.setDrawRange(0, 0);
+      live.pointsBuf.geometry.setDrawRange(0, 0);
+      return;
     }
-    ctx.scene.add(newGroup);
-    contentGroupRef.current = newGroup;
 
-    return () => {
-      ctx.scene.remove(newGroup);
-      disposeGroup(newGroup);
-      if (contentGroupRef.current === newGroup) {
-        contentGroupRef.current = null;
-      }
-    };
-  }, [rows]);
+    const datasetKey = rows[0].timestamp_ns;
+    const isNewDataset = datasetKey !== stateRef.current.datasetKey || rows.length < stateRef.current.count;
+
+    let bounds;
+    if (isNewDataset && liveBounds) {
+      // Live phase: fixed bounds derived from the run's own parameters, so
+      // appending a point never requires re-deriving or re-writing every
+      // point already on screen.
+      bounds = liveBounds;
+    } else if (isNewDataset) {
+      // Final result: bounds fitted exactly to the finished dataset, a
+      // one-time computation.
+      const times = rows.map((r) => (r.timestamp_ns - rows[0].timestamp_ns) / 1e9);
+      const prices = rows.map((r) => r.true_price_at_trade);
+      const invs = rows.map((r) => r.inventory_after);
+      bounds = {
+        tMax: Math.max(...times) || 1,
+        pMin: Math.min(...prices),
+        pMax: Math.max(...prices),
+        iMin: Math.min(...invs),
+        iMax: Math.max(...invs),
+      };
+      stateRef.current.bounds = bounds;
+    } else {
+      bounds = stateRef.current.bounds;
+    }
+
+    const startIndex = isNewDataset ? 0 : stateRef.current.count;
+    if (isNewDataset) {
+      stateRef.current.datasetKey = datasetKey;
+      stateRef.current.bounds = bounds;
+    }
+
+    const t0 = rows[0].timestamp_ns;
+    for (let i = startIndex; i < rows.length && i < MAX_LIVE_POINTS; i++) {
+      const r = rows[i];
+      const x = norm((r.timestamp_ns - t0) / 1e9, 0, bounds.tMax) * 3;
+      const y = norm(r.true_price_at_trade, bounds.pMin, bounds.pMax) * 1.6;
+      const z = norm(r.inventory_after, bounds.iMin, bounds.iMax) * 1.6;
+      const color = r.side === "BUY" ? BUY : SELL;
+      writePoint(live.lineBuf, i, x, y, z, color);
+      writePoint(live.pointsBuf, i, x, y, z, color);
+    }
+
+    const count = Math.min(rows.length, MAX_LIVE_POINTS);
+    stateRef.current.count = count;
+    live.lineBuf.geometry.setDrawRange(0, count);
+    live.pointsBuf.geometry.setDrawRange(0, count);
+    live.lineBuf.geometry.attributes.position.needsUpdate = true;
+    live.lineBuf.geometry.attributes.color.needsUpdate = true;
+    live.pointsBuf.geometry.attributes.position.needsUpdate = true;
+    live.pointsBuf.geometry.attributes.color.needsUpdate = true;
+  }, [rows, liveBounds]);
 
   return <div ref={mountRef} style={{ width: "100%", height: "100%" }} />;
 }
