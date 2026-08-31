@@ -161,7 +161,7 @@ make setup   # first time only -- installs Python and npm dependencies
 make up      # starts the driver, backend, and frontend together
 ```
 
-Then open `http://localhost:5173`. Pick a market maker, set its parameters, and run -- the backend launches the driver if needed and the same binaries and CLI shape described above, streams progress live, and renders the resulting fill log as a price/trade chart and an inventory chart once the run finishes. `make down` stops everything again, and `make logs` tails what each piece is doing.
+Then open `http://localhost:5173`. Pick a market maker, set its parameters, and run -- the backend launches the driver if needed and the same binaries and CLI shape described above, and streams the run live into a full-viewport 3D scene: each fill lands as a point along time/price/inventory axes (each axis labeled with its name and live min/max value, anchored directly on the line), while a hub diagram shows orders and fills moving between the traders, sequencer, and market maker as they happen. Completed runs stay listed as pills so you can flip between, say, a fixed-spread run and an Avellaneda-Stoikov run and compare them directly. `make down` stops everything again, and `make logs` tails what each piece is doing.
 
 If you would rather run each piece by hand: install the backend's dependencies with `./.venv/bin/pip install -r server/requirements.txt`, start it with `cd server && ../.venv/bin/uvicorn main:app --port 8000`, and in another terminal run `cd web && npm install && npm run dev`.
 

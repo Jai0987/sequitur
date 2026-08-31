@@ -1,11 +1,43 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { CSS2DRenderer, CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 
 const BUY = new THREE.Color("#1fa37d");
 const SELL = new THREE.Color("#e0522e");
 const GROUND = "#12161f";
 const MAX_LIVE_POINTS = 20000; // pre-allocated buffer capacity; a run this long would be unusual
+
+// Distinct from --accent (used everywhere else for "active/important" UI --
+// reusing it for the price axis would make a gold flash mean two different
+// things depending on where you're looking).
+const AXIS_COLOR = { time: "#576073", price: "#c9789e", inventory: "#6b7fd7" };
+
+function makeTickEl(color) {
+  const el = document.createElement("div");
+  el.className = "axis-label-tick";
+  el.style.color = color;
+  return el;
+}
+
+// The far end of each axis carries its name stacked above its value in one
+// label -- anchored at the tick itself, not pushed further out along the
+// axis, since anything placed past the tick risks projecting outside the
+// clipped viewport once the axis already reaches near the frame edge.
+function makeFarLabel(name, color) {
+  const el = document.createElement("div");
+  el.className = "axis-label-far";
+  const nameEl = document.createElement("div");
+  nameEl.className = "axis-label-name";
+  nameEl.style.color = color;
+  nameEl.textContent = name;
+  const valueEl = document.createElement("div");
+  valueEl.className = "axis-label-tick";
+  valueEl.style.color = color;
+  el.appendChild(nameEl);
+  el.appendChild(valueEl);
+  return { el, valueEl };
+}
 
 function norm(v, lo, hi) {
   if (hi === lo) return 0;
@@ -118,20 +150,67 @@ export default function Scene3D({ rows, liveBounds }) {
 
     // Axis reference lines -- x is time (start to end of the run), y is
     // price, z is inventory. Without these the path is just a pretty
-    // shape with no way to tell what it means.
+    // shape with no way to tell what it means. Each axis carries its own
+    // name + live min/max value directly in 3D space (via CSS2DObject) so
+    // identifying a line never depends on matching it back to a corner
+    // legend while the scene is rotating.
     function axisLine(from, to, hex) {
       const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
-      return new THREE.Line(geo, new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.5 }));
+      return new THREE.Line(geo, new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.55 }));
     }
+    // All three axes share the same half-length so none of them reaches
+    // anywhere near the camera's own position (3.4, 2.1, 3.4) -- time used
+    // to run out to +-3.2, almost co-located with the camera on that axis,
+    // which threw its far-end label wildly off-screen.
+    const AXIS_REACH = 1.8;
     const axes = new THREE.Group();
     axes.add(
-      axisLine(new THREE.Vector3(-3.2, 0, 0), new THREE.Vector3(3.2, 0, 0), 0x576073), // time
-      axisLine(new THREE.Vector3(0, -1.8, 0), new THREE.Vector3(0, 1.8, 0), 0xd9a441), // price
-      axisLine(new THREE.Vector3(0, 0, -1.8), new THREE.Vector3(0, 0, 1.8), 0x6b7fd7), // inventory
+      axisLine(new THREE.Vector3(-AXIS_REACH, 0, 0), new THREE.Vector3(AXIS_REACH, 0, 0), AXIS_COLOR.time),
+      axisLine(new THREE.Vector3(0, -AXIS_REACH, 0), new THREE.Vector3(0, AXIS_REACH, 0), AXIS_COLOR.price),
+      axisLine(new THREE.Vector3(0, 0, -AXIS_REACH), new THREE.Vector3(0, 0, AXIS_REACH), AXIS_COLOR.inventory),
     );
+
+    function addAxisLabels(posEnd, negEnd, name, color) {
+      const far = makeFarLabel(name, color);
+      const farObj = new CSS2DObject(far.el);
+      farObj.position.copy(posEnd);
+      const nearEl = makeTickEl(color);
+      const nearObj = new CSS2DObject(nearEl);
+      nearObj.position.copy(negEnd);
+      axes.add(farObj, nearObj);
+      return { min: nearEl, max: far.valueEl };
+    }
+    const labelEls = {
+      time: addAxisLabels(new THREE.Vector3(AXIS_REACH, 0, 0), new THREE.Vector3(-AXIS_REACH, 0, 0), "time", AXIS_COLOR.time),
+      price: addAxisLabels(new THREE.Vector3(0, AXIS_REACH, 0), new THREE.Vector3(0, -AXIS_REACH, 0), "price", AXIS_COLOR.price),
+      inventory: addAxisLabels(
+        new THREE.Vector3(0, 0, AXIS_REACH),
+        new THREE.Vector3(0, 0, -AXIS_REACH),
+        "inventory",
+        AXIS_COLOR.inventory,
+      ),
+    };
+
+    // Marks (0, 0, 0): the run's starting price and flat (zero) inventory,
+    // at time zero -- the reference point every offset on the path is
+    // measured against.
+    const origin = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x8891a3, transparent: true, opacity: 0.7 }),
+    );
+    axes.add(origin);
+
     axes.visible = false;
     scene.add(axes);
     liveGroupRef.current.axes = axes;
+    liveGroupRef.current.labelEls = labelEls;
+
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.domElement.style.position = "absolute";
+    labelRenderer.domElement.style.top = "0";
+    labelRenderer.domElement.style.left = "0";
+    labelRenderer.domElement.style.pointerEvents = "none";
+    container.appendChild(labelRenderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enablePan = false;
@@ -148,6 +227,7 @@ export default function Scene3D({ rows, liveBounds }) {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
+      labelRenderer.setSize(w, h);
     }
     resize();
     const resizeObserver = new ResizeObserver(resize);
@@ -161,6 +241,7 @@ export default function Scene3D({ rows, liveBounds }) {
       }
       controls.update();
       renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
     }
     animate();
 
@@ -178,6 +259,9 @@ export default function Scene3D({ rows, liveBounds }) {
           else obj.material.dispose();
         }
       });
+      if (labelRenderer.domElement.parentElement === container) {
+        container.removeChild(labelRenderer.domElement);
+      }
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
       }
@@ -239,12 +323,18 @@ export default function Scene3D({ rows, liveBounds }) {
     if (isNewDataset) {
       stateRef.current.datasetKey = datasetKey;
       stateRef.current.bounds = bounds;
+      live.labelEls.time.min.textContent = "0s";
+      live.labelEls.time.max.textContent = `${bounds.tMax.toFixed(1)}s`;
+      live.labelEls.price.min.textContent = bounds.pMin.toFixed(2);
+      live.labelEls.price.max.textContent = bounds.pMax.toFixed(2);
+      live.labelEls.inventory.min.textContent = bounds.iMin.toFixed(0);
+      live.labelEls.inventory.max.textContent = bounds.iMax.toFixed(0);
     }
 
     const t0 = rows[0].timestamp_ns;
     for (let i = startIndex; i < rows.length && i < MAX_LIVE_POINTS; i++) {
       const r = rows[i];
-      const x = norm((r.timestamp_ns - t0) / 1e9, 0, bounds.tMax) * 3;
+      const x = norm((r.timestamp_ns - t0) / 1e9, 0, bounds.tMax) * 1.6;
       const y = norm(r.true_price_at_trade, bounds.pMin, bounds.pMax) * 1.6;
       const z = norm(r.inventory_after, bounds.iMin, bounds.iMax) * 1.6;
       const color = r.side === "BUY" ? BUY : SELL;
