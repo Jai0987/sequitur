@@ -8,3 +8,4 @@ web/node_modules/
 web/dist/
 server/runs/
 server/__pycache__/
+.logs/

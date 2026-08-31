@@ -154,29 +154,16 @@ The second argument is the theoretical combined arrival rate for whatever `A` an
 
 ## Running it from the browser
 
-Instead of managing several terminals by hand, a small web app can run one simulation for you. It assumes the C++ project is already built, per the steps above.
-
-Install the backend's dependencies once:
+Instead of managing several terminals by hand, a small web app can run one simulation for you. The fastest path, once the C++ project is built (`make build`, or the manual steps above):
 
 ```bash
-./.venv/bin/pip install -r server/requirements.txt
+make setup   # first time only -- installs Python and npm dependencies
+make up      # starts the driver, backend, and frontend together
 ```
 
-Start the backend:
+Then open `http://localhost:5173`. Pick a market maker, set its parameters, and run -- the backend launches the driver if needed and the same binaries and CLI shape described above, streams progress live, and renders the resulting fill log as a price/trade chart and an inventory chart once the run finishes. `make down` stops everything again, and `make logs` tails what each piece is doing.
 
-```bash
-cd server && /path/to/.venv/bin/uvicorn main:app --port 8000
-```
-
-In another terminal, start the frontend:
-
-```bash
-cd web
-npm install   # first time only
-npm run dev
-```
-
-Open the URL Vite prints (usually `http://localhost:5173`). Pick a market maker, set its parameters, and run -- the backend launches the driver if needed and the same binaries and CLI shape described above, streams progress live, and renders the resulting fill log as a price/trade chart and an inventory chart once the run finishes.
+If you would rather run each piece by hand: install the backend's dependencies with `./.venv/bin/pip install -r server/requirements.txt`, start it with `cd server && ../.venv/bin/uvicorn main:app --port 8000`, and in another terminal run `cd web && npm install && npm run dev`.
 
 ## Design docs
 
