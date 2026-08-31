@@ -44,6 +44,79 @@
   color: var(--ink-faint);
 }
 
+/* legend */
+
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.legend-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--ink-faint);
+}
+
+.legend-group span:not(.legend-swatch) {
+  margin-right: 4px;
+}
+
+.legend-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  display: inline-block;
+}
+
+/* run history */
+
+.run-history {
+  position: absolute;
+  top: 28px;
+  right: 36px;
+  z-index: 2;
+  display: flex;
+  gap: 6px;
+  max-width: 260px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.run-pill {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.run-pill:hover {
+  color: var(--ink);
+}
+
+.run-pill.on {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.run-pill-live {
+  cursor: default;
+}
+
+.run-pill-live.on {
+  border-color: var(--buy);
+  color: var(--buy);
+}
+
 /* sequencer hub */
 
 .hub {
@@ -167,7 +240,7 @@
 
 .hud {
   position: absolute;
-  top: 32px;
+  top: 72px;
   right: 36px;
   z-index: 2;
   display: flex;

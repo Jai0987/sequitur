@@ -3,6 +3,8 @@ import Scene3D from "./components/Scene3D";
 import ControlRail from "./components/ControlRail";
 import Hud from "./components/Hud";
 import SequencerHub from "./components/SequencerHub";
+import Legend from "./components/Legend";
+import RunHistory from "./components/RunHistory";
 import { startRun, watchRun, fetchResult } from "./api";
 import "./App.css";
 
@@ -27,13 +29,15 @@ export default function App() {
   const [logOpen, setLogOpen] = useState(false);
   const [liveRows, setLiveRows] = useState([]);
   const [pulses, setPulses] = useState([]);
-  const [result, setResult] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
   const [liveBounds, setLiveBounds] = useState(null);
 
-  // Incoming SSE events can arrive far faster than React should actually
-  // re-render at. These buffer everything between flushes; a timer drains
-  // them into state at a fixed rate instead of one setState per event.
+  // Every completed run stays here rather than being replaced by the next
+  // one -- starting a new run doesn't erase the last one, so a fixed-delta
+  // run and an Avellaneda-Stoikov run can be flipped between and compared.
+  const [runHistory, setRunHistory] = useState([]);
+  const [viewingRunId, setViewingRunId] = useState(null); // null = auto-follow whatever's live/most recent
+
   const pendingRowsRef = useRef([]);
   const pendingLogRef = useRef([]);
   const pendingPulsesRef = useRef([]);
@@ -57,8 +61,6 @@ export default function App() {
         pendingPulsesRef.current = [];
         setPulses((prev) => {
           const next = prev.concat(newPulses);
-          // Drop the oldest excess pulses outright rather than let a burst
-          // pile up hundreds of animating DOM nodes at once.
           return next.length > MAX_CONCURRENT_PULSES ? next.slice(next.length - MAX_CONCURRENT_PULSES) : next;
         });
         newPulses.forEach((p) => {
@@ -81,18 +83,12 @@ export default function App() {
     setLastMessage(null);
     setLiveRows([]);
     setPulses([]);
-    setResult(null);
     setErrorMessage(null);
+    setViewingRunId(null); // a fresh run always takes over the main view; history is untouched
     pendingRowsRef.current = [];
     pendingLogRef.current = [];
     pendingPulsesRef.current = [];
 
-    // Fixed bounds for the live view, derived from the run's own
-    // parameters rather than the data seen so far -- this is what lets
-    // Scene3D append new points without ever having to re-derive or
-    // rewrite points already on screen. Generous on purpose: it only
-    // needs to comfortably contain what the run will plausibly produce,
-    // not fit it tightly (the final result gets an exactly-fitted view).
     const duration = params.marketMaker === "fixed" ? params.durationSeconds : params.horizonSeconds;
     setLiveBounds({
       tMax: duration,
@@ -119,7 +115,7 @@ export default function App() {
           setStatus("error");
         } else if (event.type === "done") {
           const res = await fetchResult(runId);
-          setResult(res);
+          setRunHistory((prev) => [...prev, { id: runId, marketMaker: params.marketMaker, rows: res.rows, stats: res.stats }]);
           setStatus("done");
         }
       });
@@ -129,26 +125,36 @@ export default function App() {
     }
   };
 
-  const sceneRows = status === "done" ? result?.rows : liveRows;
-  const hudStats = status === "done" ? result?.stats : null;
+  const isLive = status === "running" && viewingRunId === null;
+  const latestRun = runHistory.length ? runHistory[runHistory.length - 1] : null;
+  const viewedRun = viewingRunId ? runHistory.find((r) => r.id === viewingRunId) : latestRun;
+
+  const sceneRows = isLive ? liveRows : viewedRun?.rows;
+  const hudStats = !isLive ? viewedRun?.stats : null;
+  const showLegend = isLive ? liveRows.length > 0 : Boolean(viewedRun);
 
   return (
     <div className="stage">
       <div className="stage-scene">
-        <Scene3D rows={sceneRows} liveBounds={status === "done" ? null : liveBounds} />
+        <Scene3D rows={sceneRows} liveBounds={isLive ? liveBounds : null} />
       </div>
 
       <header className="mark">
         <span className="mark-title">sequitur</span>
         <span className="mark-sub">
-          {status === "idle" && "awaiting a run"}
-          {status === "running" && "in progress"}
-          {status === "done" && "run complete"}
+          {status === "idle" && runHistory.length === 0 && "awaiting a run"}
+          {isLive && "in progress"}
+          {!isLive && status === "running" && "in progress (viewing another run)"}
+          {status === "done" && viewingRunId === null && "run complete"}
           {status === "error" && "run failed"}
+          {status !== "running" && status !== "error" && viewingRunId !== null && "viewing a past run"}
         </span>
+        {showLegend && <Legend />}
       </header>
 
-      {(status === "running" || status === "done") && <SequencerHub pulses={pulses} />}
+      <RunHistory runs={runHistory} viewingRunId={viewingRunId} isLive={isLive} onSelect={setViewingRunId} />
+
+      {(status === "running" || runHistory.length > 0) && <SequencerHub pulses={pulses} />}
 
       {hudStats && <Hud stats={hudStats} />}
 

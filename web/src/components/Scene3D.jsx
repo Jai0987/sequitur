@@ -116,6 +116,23 @@ export default function Scene3D({ rows, liveBounds }) {
     scene.add(liveGroup);
     liveGroupRef.current = { group: liveGroup, lineBuf, pointsBuf };
 
+    // Axis reference lines -- x is time (start to end of the run), y is
+    // price, z is inventory. Without these the path is just a pretty
+    // shape with no way to tell what it means.
+    function axisLine(from, to, hex) {
+      const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+      return new THREE.Line(geo, new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.5 }));
+    }
+    const axes = new THREE.Group();
+    axes.add(
+      axisLine(new THREE.Vector3(-3.2, 0, 0), new THREE.Vector3(3.2, 0, 0), 0x576073), // time
+      axisLine(new THREE.Vector3(0, -1.8, 0), new THREE.Vector3(0, 1.8, 0), 0xd9a441), // price
+      axisLine(new THREE.Vector3(0, 0, -1.8), new THREE.Vector3(0, 0, 1.8), 0x6b7fd7), // inventory
+    );
+    axes.visible = false;
+    scene.add(axes);
+    liveGroupRef.current.axes = axes;
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enablePan = false;
     controls.minDistance = 2.5;
@@ -176,9 +193,13 @@ export default function Scene3D({ rows, liveBounds }) {
     const live = liveGroupRef.current;
     if (!ctx || !live) return;
 
-    const hasData = rows && rows.length > 0;
+    // Array.isArray guarantees a real boolean -- "rows && rows.length > 0"
+    // evaluates to undefined (not false) when rows itself is undefined,
+    // which left the axis lines rendering even in the idle state.
+    const hasData = Array.isArray(rows) && rows.length > 0;
     idleRef.current.visible = !hasData;
     live.group.visible = hasData;
+    live.axes.visible = hasData;
     if (!hasData) {
       stateRef.current.datasetKey = null;
       stateRef.current.count = 0;
