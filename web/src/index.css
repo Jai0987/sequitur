@@ -1,0 +1,31 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+:root {
+  --ground: #12161f;
+  --surface: #1a2029;
+  --surface-raised: #202836;
+  --ink: #e7e9ee;
+  --ink-muted: #8891a3;
+  --ink-faint: #626c7e;
+  --border: #2b3241;
+  --accent: #d9a441;
+  --accent-ink: #f1cb84;
+  --buy: #1fa37d;
+  --sell: #e0522e;
+  --grid: #232b39;
+  --font-display: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <optional>
@@ -54,6 +55,7 @@ int main(int argc, char **argv)
     const double duration_seconds = argc > 12 ? std::stod(argv[12]) : 30.0;
 
     std::signal(SIGINT, on_sigint);
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     aeron::Context context;
     std::shared_ptr<Aeron> aeron = Aeron::connect(context);

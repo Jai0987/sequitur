@@ -4,3 +4,7 @@ compile_commands.json
 *.csv
 *.png
 .venv/
+web/node_modules/
+web/dist/
+server/runs/
+server/__pycache__/

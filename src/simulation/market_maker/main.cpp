@@ -4,6 +4,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -56,6 +57,7 @@ int main(int argc, char **argv)
     const double delta = std::stod(argv[10]);
 
     std::signal(SIGINT, on_sigint);
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     std::ofstream fill_log(fill_log_path);
     fill_log << "global_sequence,timestamp_ns,side,price,quantity,true_price_at_trade,delta,inventory_after\n";

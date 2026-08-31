@@ -1,6 +1,7 @@
 #include <atomic>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -38,6 +39,11 @@ int main(int argc, char **argv)
     const std::int32_t outbound_stream_id = argc > 4 ? std::stoi(argv[4]) : inbound_stream_id + 1;
 
     std::signal(SIGINT, on_sigint);
+    // When stdout is a pipe (e.g. a supervising process capturing it)
+    // rather than a terminal, the C library defaults to full buffering,
+    // so nothing would appear until the buffer fills or the process
+    // exits. Force line buffering so status lines show up as printed.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
     aeron::Context context;
     std::shared_ptr<Aeron> aeron = Aeron::connect(context);
