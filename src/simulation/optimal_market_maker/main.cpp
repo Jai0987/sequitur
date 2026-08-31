@@ -34,13 +34,15 @@ constexpr std::int64_t kQuoteTickNs = 100'000'000; // publish a quote every 100m
 
 int main(int argc, char **argv)
 {
-    if (argc < 11)
+    if (argc < 13)
     {
         std::cerr << "Usage: " << argv[0]
                   << " <orderChannel> <orderStreamId> <fillLogPath> <quoteChannel> <quoteStreamId>"
-                  << " <simEpochSeconds> <seed> <sigma> <s0> <delta>\n"
-                  << "  This is the phase 1 fixed-delta baseline: it always quotes true_price +/- delta.\n"
-                  << "  e.g. " << argv[0] << " aeron:ipc 30 fills.csv aeron:ipc 32 1798650000 42 0.5 100.0 0.05\n";
+                  << " <simEpochSeconds> <seed> <sigma> <s0> <gamma> <k> <horizonSeconds>\n"
+                  << "  Quotes from the Avellaneda-Stoikov closed-form approximation:\n"
+                  << "  reservation = s - q*gamma*sigma^2*(T-t)\n"
+                  << "  spread = gamma*sigma^2*(T-t) + (2/gamma)*ln(1 + gamma/k)\n"
+                  << "  e.g. " << argv[0] << " aeron:ipc 30 fills.csv aeron:ipc 32 1798650000 42 0.5 100.0 0.1 20.0 300\n";
         return 1;
     }
 
@@ -53,7 +55,9 @@ int main(int argc, char **argv)
     const std::uint64_t seed = std::stoull(argv[7]);
     const double sigma = std::stod(argv[8]);
     const double s0 = std::stod(argv[9]);
-    const double delta = std::stod(argv[10]);
+    const double gamma = std::stod(argv[10]);
+    const double k = std::stod(argv[11]);
+    const double horizon_seconds = std::stod(argv[12]);
 
     std::signal(SIGINT, on_sigint);
 
@@ -70,8 +74,6 @@ int main(int argc, char **argv)
         const seq::OrderEvent order = seq::read_payload<seq::OrderEvent>(envelope);
         ++received;
 
-        // A liquidity taker buying takes from our ask, so our inventory
-        // goes down; them selling means our inventory goes up.
         const double signed_quantity = order.side == seq::Side::Buy ? order.quantity : -order.quantity;
         inventory -= signed_quantity;
 
@@ -113,9 +115,10 @@ int main(int argc, char **argv)
         quote_publication = aeron->findPublication(pub_id);
     }
 
-    std::cout << "Market maker on " << order_channel << " stream " << order_stream_id
+    std::cout << "Optimal market maker on " << order_channel << " stream " << order_stream_id
               << ", publishing quotes on " << quote_channel << " stream " << quote_stream_id
-              << ", logging fills to " << fill_log_path << " (Ctrl+C to stop)..." << std::endl;
+              << ", horizon " << horizon_seconds << "s, logging fills to " << fill_log_path
+              << " (Ctrl+C to stop)..." << std::endl;
 
     seq::IncrementalPricePath price_path(seed, sigma, s0);
 
@@ -137,10 +140,15 @@ int main(int argc, char **argv)
         if (wall_now_ns - last_quote_ns >= kQuoteTickNs)
         {
             const double true_price = price_path.price_at(elapsed_ns);
-            seq::Quote quote{true_price - delta, true_price + delta, wall_now_ns};
+            const double elapsed_s = static_cast<double>(elapsed_ns) / 1e9;
+            const double time_remaining = std::max(0.0, horizon_seconds - elapsed_s);
+
+            const double reservation = true_price - inventory * gamma * sigma * sigma * time_remaining;
+            const double spread = gamma * sigma * sigma * time_remaining
+                + (2.0 / gamma) * std::log(1.0 + gamma / k);
+
+            seq::Quote quote{reservation - spread / 2.0, reservation + spread / 2.0, wall_now_ns};
             std::memcpy(quote_buffer.data(), &quote, sizeof(quote));
-            // A dropped or unread quote is fine to ignore -- only the latest
-            // one matters, unlike order fills, so there is no retry here.
             quote_publication->offer(quote_atomic_buffer, 0, sizeof(quote));
             last_quote_ns = wall_now_ns;
         }
@@ -151,7 +159,7 @@ int main(int argc, char **argv)
 
     fill_log.flush();
     fill_log.close();
-    std::cout << "Market maker stopped. Received " << received << " fills, final inventory=" << inventory
+    std::cout << "Optimal market maker stopped. Received " << received << " fills, final inventory=" << inventory
               << ". Fill log: " << fill_log_path << std::endl;
     return 0;
 }

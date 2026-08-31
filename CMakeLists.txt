@@ -45,3 +45,4 @@ add_aeron_executable(sequencer sequencer)
 # Simulation: the market-making research project.
 add_aeron_executable(liquidity_taker simulation/liquidity_taker)
 add_aeron_executable(market_maker simulation/market_maker)
+add_aeron_executable(optimal_market_maker simulation/optimal_market_maker)
