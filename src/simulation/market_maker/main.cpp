@@ -89,10 +89,18 @@ int main(int argc, char **argv)
                   << delta_at_trade << ','
                   << inventory << '\n';
 
+        // One line per fill, not batched -- this is what lets a supervising
+        // process (the web backend) show the sequenced stream live instead
+        // of only after the run finishes.
+        std::cout << "FILL seq=" << envelope.global_sequence
+                  << " side=" << (order.side == seq::Side::Buy ? "BUY" : "SELL")
+                  << " price=" << order.price
+                  << " true_price=" << order.true_price_at_send
+                  << " inventory=" << inventory << '\n';
+
         if (received % 50 == 0)
         {
             fill_log.flush();
-            std::cout << "received " << received << " fills, inventory=" << inventory << '\n';
         }
     };
 

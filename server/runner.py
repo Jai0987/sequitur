@@ -1,12 +1,56 @@
 import itertools
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
 import uuid
 
 from paths import BUILD_DIR, DRIVER_BINARY, RUNS_DIR, require_built
+
+# Parsed from each process's own stdout lines (already established formats,
+# used by the CLI/README) into structured events for the frontend's live
+# hub diagram and 3D scene, in addition to the raw text used by the log
+# panel. A number pattern permissive enough for both plain and scientific
+# notation, since C++'s default double formatting can produce either.
+_NUM = r"-?[\d.]+(?:[eE][+-]?\d+)?"
+_ORDER_RE = re.compile(rf"trader=(\d+) side=(BUY|SELL) true_price=({_NUM}) trade_price=({_NUM})")
+_SEQUENCED_RE = re.compile(r"global_seq=(\d+) payload_size=(\d+)")
+_FILL_RE = re.compile(rf"FILL seq=(\d+) side=(BUY|SELL) price=({_NUM}) true_price=({_NUM}) inventory=({_NUM})")
+
+
+def _parse_structured_event(source: str, line: str):
+    m = _FILL_RE.search(line)
+    if m:
+        return {
+            "type": "fill",
+            "source": source,
+            "globalSequence": int(m.group(1)),
+            "side": m.group(2),
+            "price": float(m.group(3)),
+            "truePrice": float(m.group(4)),
+            "inventory": float(m.group(5)),
+            # A receipt timestamp for the live view's relative timing --
+            # not the same clock domain as the CSV's C++ steady_clock
+            # values, just a proxy so the live scene has *some* time axis
+            # before the authoritative final result replaces it.
+            "receivedAtNs": time.time_ns(),
+        }
+    m = _SEQUENCED_RE.search(line)
+    if m:
+        return {"type": "sequenced", "source": source, "globalSequence": int(m.group(1))}
+    m = _ORDER_RE.search(line)
+    if m:
+        return {
+            "type": "order",
+            "source": source,
+            "trader": int(m.group(1)),
+            "side": m.group(2),
+            "truePrice": float(m.group(3)),
+            "tradePrice": float(m.group(4)),
+        }
+    return None
 
 # Stream IDs just need to not collide between runs and between the three
 # streams a single run uses (order / fill / quote); a simple incrementing
@@ -46,8 +90,12 @@ class SimulationRun:
     def _stream_output(self, name: str, proc: subprocess.Popen):
         for line in proc.stdout:
             line = line.rstrip()
-            if line:
-                self._emit(f"[{name}] {line}")
+            if not line:
+                continue
+            self._emit(f"[{name}] {line}")
+            structured = _parse_structured_event(name, line)
+            if structured:
+                self.events.put(structured)
 
     def start(self):
         threading.Thread(target=self._run, daemon=True).start()
