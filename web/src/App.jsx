@@ -1,19 +1,22 @@
 import { useState } from "react";
-import ParamForm from "./components/ParamForm";
-import ProgressLog from "./components/ProgressLog";
-import ResultsView from "./components/ResultsView";
+import Scene3D from "./components/Scene3D";
+import ControlRail from "./components/ControlRail";
+import Hud from "./components/Hud";
 import { startRun, watchRun, fetchResult } from "./api";
 import "./App.css";
 
 export default function App() {
   const [status, setStatus] = useState("idle"); // idle | running | done | error
+  const [lastMessage, setLastMessage] = useState(null);
   const [log, setLog] = useState([]);
+  const [logOpen, setLogOpen] = useState(false);
   const [result, setResult] = useState(null);
   const [errorMessage, setErrorMessage] = useState(null);
 
   const handleRun = async (params) => {
     setStatus("running");
     setLog([]);
+    setLastMessage(null);
     setResult(null);
     setErrorMessage(null);
 
@@ -21,6 +24,7 @@ export default function App() {
       const { runId } = await startRun(params);
       watchRun(runId, async (event) => {
         if (event.type === "progress") {
+          setLastMessage(event.message);
           setLog((prev) => [...prev, event.message]);
         } else if (event.type === "error") {
           setErrorMessage(event.message);
@@ -38,27 +42,42 @@ export default function App() {
   };
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <span className="brand">sequitur</span>
-        <span className="brand-sub">simulation runner</span>
+    <div className="stage">
+      <div className="stage-scene">
+        <Scene3D rows={result?.rows} />
+      </div>
+
+      <header className="mark">
+        <span className="mark-title">sequitur</span>
+        <span className="mark-sub">
+          {status === "idle" && "awaiting a run"}
+          {status === "running" && "in progress"}
+          {status === "done" && "run complete"}
+          {status === "error" && "run failed"}
+        </span>
       </header>
 
-      <p className="intro">
-        Configure a market simulation and run it for real -- this launches the
-        actual sequencer, market maker, and liquidity taker binaries, the same
-        ones documented in the README, and shows you the resulting fill log.
-      </p>
+      {status === "done" && <Hud stats={result?.stats} />}
 
-      <ParamForm onSubmit={handleRun} disabled={status === "running"} />
+      {status === "error" && <div className="toast toast-error">{errorMessage}</div>}
 
-      {status === "running" && <ProgressLog lines={log} />}
+      <div className="deck">
+        {status === "running" && (
+          <button type="button" className="ticker" onClick={() => setLogOpen((v) => !v)}>
+            {lastMessage || "starting..."}
+          </button>
+        )}
 
-      {status === "error" && (
-        <div className="error-banner">{errorMessage}</div>
-      )}
+        {logOpen && (
+          <div className="log-panel">
+            {log.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </div>
+        )}
 
-      {status === "done" && result && <ResultsView result={result} />}
+        <ControlRail onSubmit={handleRun} disabled={status === "running"} />
+      </div>
     </div>
   );
 }
